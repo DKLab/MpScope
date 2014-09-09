@@ -5,7 +5,7 @@ function varargout = MpArbScanGUI(varargin)
 
 % change log:
 %01/28/14 - Changed "scanVelocity" variable to "scanStepSize" to be more accurate [volts (or millivolts) per pixel].
-% Last Modified by GUIDE v2.5 12-Jul-2014 17:35:32
+% Last Modified by GUIDE v2.5 09-Sep-2014 10:21:03
 
 %% INITIALIZATION - MATLAB and user initialzation code, and exit
 % Begin initialization code - DO NOT EDIT
@@ -64,14 +64,24 @@ function MpArbScanGUI_OpeningFcn(hObject, eventdata, handles, varargin)
     
     handles.pathGUIfig = gcf;     % store the current figure
     
+    % NEW: the struct array handles.group will contain a scanCoords struct
+    % for every group that the user creates. A group is a set of lines or
+    % boxes that that can be repeated independently of other groups.
+    handles = createGroup(handles, 1);
+    % createGroup will create the fields:
+        % handles.group   and
+        % handles.currentGroupIndex
+    
+    
     guidata(hObject, handles);    % Update handles structure
     
     pushButtonClearPath_Callback(hObject, eventdata, handles)  % set up blank path and image
     
+    
     % no path, so assign the length zero (so Delpi knows), may not be necessary
     assignin('base','SCAN_path_len',int32(0) );
     
-    set(gcf,'name','MpArbScanGUI v0.10')    
+    set(gcf,'name','MpArbScanGUI v0.10');   
     
     % uiwait(handles.figure1);   % UIWAIT makes MpArbScanGUI wait for user response (see UIRESUME)
     
@@ -82,21 +92,158 @@ function varargout = MpArbScanGUI_OutputFcn(hObject, eventdata, handles)
 
 %% stand-alone functions 
 
+function handles = createGroup(handles, optional_GroupIndex)
+    if exist('optional_GroupIndex', 'var')
+        newIndex = optional_GroupIndex;
+    else
+        newIndex = length(handles.group) + 1;
+    end
+    
+    % dont ask for number of cycles if this is the first group (just assume
+    % 1 cycle)
+    if newIndex > 1
+    
+        prompt = sprintf('How many times should Group %d be repeated before moving on to the next group?',...
+                            newIndex);
+        dlg_title = 'Group Cycles';
+        defAns = {'1'};
+        cyclesStr = inputdlg( prompt, dlg_title, 1, defAns);
+
+        cycles = str2double(cyclesStr{1});
+        if isnan(cycles)
+            cycles = 1;
+        end
+    else
+        cycles = 1;
+    end
+    
+    newScanCoords = struct('scanShape', 'blank', ...
+                                'startPoint', [], ...
+                                'endPoint', [], ...
+                                'nLines', [], ...
+                                'orientation', [], ...
+                                'name','<blank>');
+    
+    handles.group(newIndex) = struct(...
+        'scanCoords', newScanCoords,...
+        'cycles', cycles );
+    
+    handles.currentGroupIndex = newIndex;
+
+function mouseDown_Callback(hObject, ~)
+    % Any number of graphics objects may have this callback registered as
+    % the ButtonDownFcn.
+    % On mouse down, check to see if an imline needs to be completed by
+    % asking the user if they want to add a new line, finish the path, or
+    % create a new group to add lines to.
+    
+    handles = guidata(hObject);
+    groupIndex = handles.currentGroupIndex;
+    
+    if handles.drawingLine
+
+        qstring = sprintf('Would you like to add a new line to Group %d, start a new Group, or finish placing lines?', ...
+                           groupIndex);
+        title = 'Line Placed';
+        newLine = 'New Line';
+        newGroup = 'New Group';
+        finishLine = 'Done Placing Lines';
+        default = newLine;
+        
+        answer = questdlg( qstring, title, newGroup, newLine, finishLine, default); 
+
+        switch answer
+            case newLine
+                handles = StopLine(hObject, [], handles);
+                handles = StartNewLine(hObject, [], handles);
+                
+            case newGroup
+                handles = StopLine(hObject, [], handles);
+                handles = createGroup(handles);
+                handles = StartNewLine(hObject, [], handles);
+                
+            case finishLine
+                handles = StopLine(hObject, [], handles);
+                
+            otherwise
+                % disregard this mouse click
+                return;
+        end
+    else
+        % Nothing is being drawn -- ask the user if they want to create a
+        % new group, or add a line or a box to the current group
+        qstring = sprintf('Would you like to create a new Group, add a line to Group %d, or add a box to Group %d?', ...
+                            groupIndex, groupIndex);
+        title = 'Add New...';
+        newLine = 'Add Line';
+        newGroup = 'Create New Group';
+        newBox = 'Add Box';
+        default = newGroup;
+        
+        answer = questdlg( qstring, title, newGroup, newLine, newBox, default);
+        
+        switch answer
+            case newLine
+                handles = StartNewLine(hObject, [], handles);
+            case newGroup
+                handles = createGroup(handles);
+            case newBox
+                %TODO: create new box
+                
+            otherwise
+                return;
+        end
+    end
+    
+    guidata(hObject, handles);
+    
+    
+
 function handles = updatePath(hObject, eventdata, handles,extra)
     % funtion is called whenever a new point is added to the scanCoords
 
-    if nargin == 4 & strcmp(extra,'fast')
-        fast = true;
-    else
-        fast = false;
-    end
+    fast = (nargin == 4) && strcmp(extra, 'fast');
 
     %fast = false; %jd - don't use this for now
 
+    % TESTING groupIndex: for now just set it to the current index, but in
+    % the future updatePath will likely need to iterate through all groups
+    % (and handle transitions between groups)
+    groupIndex = handles.currentGroupIndex;
+    
+    % create a list of scanCoords that includes the scanCoords from every
+    % group
+    nGroups = length(handles.group);
+    scIndex = 1;
+    scanCoords = [];        % the struct array that will hold the full scan path
+                    % with all group cycles included
+                    
+    for groupIndex = 1 : nGroups
+        cycles = handles.group(groupIndex).cycles;
+        
+        newScanCoords = handles.group(groupIndex).scanCoords;
+ 
+        % handle repetitions (the first cycle is already accounted for)
+        while cycles > 1
+            cycles = cycles - 1;
+            newScanCoords = [ newScanCoords, ...
+                                    handles.group(groupIndex).scanCoords ];      
+        end
+        
+        if isempty(scanCoords)
+            scanCoords = newScanCoords;
+        else
+            % (preallocating scanCoords may be tricky -- would need a seperate loop
+            % before this one to calculate the total length that sc will be)
+            scanCoords = [ scanCoords, newScanCoords];
+        end 
+    end
+    
     if ~fast
         % plot the start and endpoints on the graph, and place text
-        for i = 1:length(handles.scanCoords)
-            sc = handles.scanCoords(i);     % copy to a structure, to make it easier to access
+        for i = 1:length(scanCoords)
+            sc = scanCoords(i);
+            
             if strcmp(sc.scanShape,'blank')
                 break                       % nothing to mark
             end
@@ -128,9 +275,21 @@ function handles = updatePath(hObject, eventdata, handles,extra)
     if ~fast
         % update the listbox
         % make a cell structure of existing names
-        strmat = [];
-        for s = 1:length(handles.scanCoords)
-            strmat = strvcat(strmat,handles.scanCoords(s).name);
+        
+        for groupIndex = 1 : length(handles.group)
+            if groupIndex == 1
+                strmat = sprintf('<HTML><b>Group 1</b>&nbsp;&nbsp;(x%d)</HTML>',...
+                            handles.group(groupIndex).cycles);
+            else
+                strmat = char(strmat, sprintf('<HTML><b>Group %d</b>&nbsp;&nbsp;(x%d)</HTML>', ...
+                            groupIndex, handles.group(groupIndex).cycles));
+            end
+            
+            for scIndex = 1:length(handles.group(groupIndex).scanCoords)
+                strmat = char( strmat, ...
+                        sprintf('<HTML>&nbsp;&nbsp;&nbsp;&nbsp;%s</HTML>',...
+                            handles.group(groupIndex).scanCoords(scIndex).name));
+            end
         end
         set(handles.listboxScanCoords,'String',cellstr(strmat));
     end % fast
@@ -138,15 +297,19 @@ function handles = updatePath(hObject, eventdata, handles,extra)
     % update the actual path
     handles.path = [];          % clear previously set path
         
-    if strcmp(handles.scanCoords(1).scanShape,'blank')
+    if strcmp(scanCoords(1).scanShape,'blank')
         guidata(hObject, handles);
         return   % no path to find
     end
         
     % actual scan path is created here!
     % pathObjNum and pathObjSumNum are also created here ...
-    for i = 1:length(handles.scanCoords)
-        sc = handles.scanCoords(i);     % copy to a structure, to make it easier to access
+    
+    % TODO: Once again, will need to iterate over groups and handle
+    % transitions between groups
+    
+    for i = 1:length(scanCoords)
+        sc = scanCoords(i);     % copy to a structure, to make it easier to access
         
         if strcmp(sc.scanShape,'line')
             % create a line here
@@ -165,7 +328,7 @@ function handles = updatePath(hObject, eventdata, handles,extra)
             end
             
             
-        elseif strcmp(handles.scanCoords(i).scanShape,'box')
+        elseif strcmp(scanCoords(i).scanShape,'box')
             % create a box here
             [pathBox objSubNum] = makePathBoxMaxAcc(sc.startPoint,sc.endPoint,handles.scanStepSize,sc.nLines,1,handles.maxAcc,handles.pixelDwellTime);
  
@@ -247,7 +410,7 @@ function handles = updatePath(hObject, eventdata, handles,extra)
     
     
     
-function StartNewLine(hObject, eventdata, handles) 
+function handles = StartNewLine(hObject, ~, handles) 
     useImline = true;          % use imline to draw line, if available
     set(handles.toggleButtonAddLine,'Visible','off');
     set(handles.pushbuttonLineDone,'Visible','on');
@@ -262,7 +425,9 @@ function StartNewLine(hObject, eventdata, handles)
     endPoint = ginput(1);
     plot(endPoint(1),endPoint(2),'r*')
 
-    if exist('imline') == 2 && useImline
+    
+    %if exist('imline') == 2 && useImline
+    if useImline
         % draw a placeable line, using imline
         handles.drawingLine = true; 
         handles.lineHandle = imline(gca,[startPoint(1) endPoint(1)],[startPoint(2) endPoint(2)]);
@@ -271,6 +436,47 @@ function StartNewLine(hObject, eventdata, handles)
     end
 
 
+function handles = StopLine(hObject, eventdata, handles) 
+    set(handles.toggleButtonAddLine,'Visible','on');
+    set(handles.pushbuttonLineDone,'Visible','off');
+    set(handles.pushbuttonNextLine,'Visible','off');   
+    
+        API = iptgetapi(handles.lineHandle);      
+        position= API.getPosition();              % get the line's position
+        API.delete();                             % delete the line
+            
+        startPoint = position(1,:);
+        endPoint = position(2,:);
+            
+        %guidata(hObject, handles);     % there's already a call to guidata
+                                        % later in this function
+
+
+    %%%
+    
+    % store the line
+    lineName = ['line ' num2str(handles.lineIter)];
+    handles.lineIter = handles.lineIter + 1;
+    handles.drawingLine = false;
+    
+    sc = struct('scanShape', 'line', ...
+                'startPoint', startPoint, ...
+                'endPoint', endPoint, ...
+                'nLines', handles.nLines, ...
+                'orientation', 1, ...
+                'name', lineName );
+    
+    groupIndex = handles.currentGroupIndex;
+            
+    if strcmp(handles.group(groupIndex).scanCoords(1).scanShape,'blank')
+        handles.group(groupIndex).scanCoords(1) = sc;                             % this is the first element
+    else
+        handles.group(groupIndex).scanCoords( end + 1 ) = sc;  % append to end
+    end
+    
+    guidata(hObject, handles);   % Update handles structure   
+    handles = updatePath(hObject, eventdata, handles);  % update the scan path
+    
     
 
 
@@ -306,11 +512,13 @@ function pushButtonAddBox_Callback(hObject, eventdata, handles)
                 'nLines', handles.numBoxLines, ...
                 'orientation', 1, ...
                 'name', boxName);
-            
-    if strcmp(handles.scanCoords(1).scanShape,'blank')
-        handles.scanCoords(1) = sc;                            % this is the first element
+    
+    groupIndex = handles.currentGroupIndex;
+    
+    if strcmp(handles.group(groupIndex).scanCoords(1).scanShape,'blank')
+        handles.group(groupIndex).scanCoords(1) = sc;                            % this is the first element
     else
-        handles.scanCoords(length(handles.scanCoords)+1) = sc; % append to end
+        handles.group(groupIndex).scanCoords( end + 1 ) = sc; % append to end
     end
        
     guidata(hObject, handles);   % Update handles structure 
@@ -336,7 +544,9 @@ function pushButtonDrawPath_Callback(hObject, eventdata, handles)
     %   imagesc(handles.axisLimCol,handles.axisLimRow,handles.im);colormap('gray');axis image; axis off
     %   hold on;plot(handles.path(:,1),handles.path(:,2),'w.');hold off
     
-    if strcmp(handles.scanCoords(1).scanShape,'blank')
+    groupIndex = handles.currentGroupIndex;
+    
+    if strcmp(handles.group(groupIndex).scanCoords(1).scanShape,'blank')
         % first element is blank (no path to draw!)
         helpdlg('no path to draw ...')
         return
@@ -344,7 +554,7 @@ function pushButtonDrawPath_Callback(hObject, eventdata, handles)
     
     nPoints = size(handles.path,1);
 
-    %comet(handles.path(:,1),handles.path(:,2));
+    comet(handles.path(:,1),handles.path(:,2));
     %return
     
 % no need for this, comet is very fast
@@ -386,7 +596,9 @@ function pushButtonClearPath_Callback(hObject, eventdata, handles)
 %         handles = StopLine(hObject, eventdata, handles);
 %     end
     
-    handles.scanCoords = struct('scanShape', 'blank', ...
+    groupIndex = handles.currentGroupIndex;
+  
+    handles.group(groupIndex).scanCoords = struct('scanShape', 'blank', ...
                                 'startPoint', [], ...
                                 'endPoint', [], ...
                                 'nLines', [], ...
@@ -418,9 +630,14 @@ function pushButtonClearGraph_Callback(hObject, eventdata, handles)
         % plot the actual graph
         cla
         testImage = log(max(handles.im,1));
-        imagesc(handles.axisLimCol,handles.axisLimRow,handles.im);
+        imageHandle = imagesc(handles.axisLimCol,handles.axisLimRow,handles.im);
 %        imagesc(handles.axisLimCol,handles.axisLimRow,testImage);
        
+        set(imageHandle, 'ButtonDownFcn', @mouseDown_Callback);
+
+        % just in case the user clicks somewhere other than the image:
+        set(gcf, 'ButtonDownFcn', @mouseDown_Callback);
+        set(gca, 'ButtonDownFcn', @mouseDown_Callback);
         
         axis on
         axis tight
@@ -449,7 +666,10 @@ function pushButtonSaveData_Callback(hObject, eventdata, handles)
     scanData.im = handles.im;
     scanData.axisLimRow = handles.axisLimRow;      % limits in the up-down direction (the rows)
     scanData.axisLimCol = handles.axisLimCol;      % limits in the left right direction (the cols)
-    scanData.scanCoords = handles.scanCoords;
+    
+    %scanData.scanCoords = handles.scanCoords;  % this line is being
+    %replaced by handles.group
+    scanData.group = handles.group;
     
     %jd - this doesn't make sense, meant to save to scanData.?
     handles.imPath = handles.fileDirectory;                  %  path of loaded data
@@ -489,7 +709,10 @@ function pushbuttonLoadData_Callback(hObject, eventdata, handles)
     handles.im = scanData.im;
     handles.axisLimRow = scanData.axisLimRow;      % limits in the up-down direction (the rows)
     handles.axisLimCol = scanData.axisLimCol;      % limits in the left right direction (the cols)
-    handles.scanCoords = scanData.scanCoords;
+    
+    %handles.scanCoords = scanData.scanCoords;  % just like in the save
+    %function, replacing this line with .group
+    handles.group = scanData.group;
     
     %jd - this doesn't make sense, meant to save to scanData.?
     handles.imPath = handles.fileDirectory;                  %  path of loaded data
@@ -547,7 +770,9 @@ function pushButtonDisplayPathData_Callback(hObject, eventdata, handles)
     disp(['    nPoints in Path: ' num2str(size(handles.path,1))])
     disp(['    pixelDwellTime for path: ' num2str(handles.pixelDwellTime)]);
     disp(['    percent ROI: ' num2str( 100*sum(handles.pathObjNum>0)/length(handles.pathObjNum)) ' %']);
-    disp(['    Average time spent over each ROI (ms): ' num2str( 1/length(handles.scanCoords)*1000*pathPeriod*sum(handles.pathObjNum>0)/length(handles.pathObjNum))]);
+    
+    % TODO: Need a new way of calculating this:
+    %disp(['    Average time spent over each ROI (ms): ' num2str( 1/length(handles.scanCoords)*1000*pathPeriod*sum(handles.pathObjNum>0)/length(handles.pathObjNum))]);
     
     % plot 
     figure
@@ -570,15 +795,23 @@ function pushDeletePathElement_Callback(hObject, eventdata, handles)
 %         handles = StopLine(hObject, eventdata, handles);
 %     end
     
-    if length(handles.scanCoords) <= 1
+    groupIndex = handles.currentGroupIndex;
+    
+    if length(handles.group(groupIndex).scanCoords) <= 1
         % only one or fewer elements, just reset the scan coordinates
         pushButtonClearPath_Callback(hObject, eventdata, handles)
         
     else
+        % TODO: will need to convert the listbox index into the
+        % group/scanCoords index pair
+        
         % find the selected element, and cut it
         elementIndex = get(handles.listboxScanCoords,'Value');
         set(handles.listboxScanCoords,'Value',1)
-    
+        
+        % The code in the comment block below can be replaced by one line:
+        handles.group(groupIndex).scanCoords(elementIndex) = [];
+        %{
         if length(handles.scanCoords) == elementIndex
             % cut last element
             handles.scanCoords = handles.scanCoords(1:end-1);
@@ -587,6 +820,7 @@ function pushDeletePathElement_Callback(hObject, eventdata, handles)
             handles.scanCoords = [handles.scanCoords(1:elementIndex-1) ...
                                   handles.scanCoords(elementIndex+1:end)];
         end
+        %}
         
         % update here, otherwise, scanCoords gets overwritten when deleting first element
         guidata(hObject, handles);   % Update handles structure
@@ -661,9 +895,12 @@ function pushButtonRunMaskPath_Callback(hObject, eventdata, handles)
     %               scanCoords:
     homefig=gcf;
     curdir=pwd;
+    
+    groupIndex = handles.currentGroupIndex;
+    
     try
         cd([pwd '\..\mask_generation']);
-        handles.scanCoords=maskwrapper(handles);
+        handles.group(groupIndex).scanCoords=maskwrapper(handles);
     catch 
 		e=lasterror();
         disp(e.message)
@@ -688,10 +925,13 @@ function pushButtonMoveUp_Callback(hObject, eventdata, handles)
         return
     end
     
+    groupIndex = handles.currentGroupIndex;
+    
     % standard swap 
-    scTemp = handles.scanCoords(currPos-1);    % move to here
-    handles.scanCoords(currPos-1) = handles.scanCoords(currPos);
-    handles.scanCoords(currPos) = scTemp;
+    scTemp = handles.group(groupIndex).scanCoords(currPos-1);    % move to here
+    handles.group(groupIndex).scanCoords(currPos-1) = ...
+                             handles.group(groupIndex).scanCoords(currPos);
+    handles.group(groupIndex).scanCoords(currPos) = scTemp;
     
     % move the selected item up as well
     set(handles.listboxScanCoords,'Value',currPos-1);
@@ -704,14 +944,17 @@ function pushButtonMoveDown_Callback(hObject, eventdata, handles)
     lb = get(handles.listboxScanCoords);         % current position
     currPos = lb.Value;
     
-    if currPos == length(handles.scanCoords)     % already at the end
+    groupIndex = handles.currentGroupIndex;
+    
+    if currPos == length(handles.group(groupIndex).scanCoords)     % already at the end
         return
     end
     
     % standard swap 
-    scTemp = handles.scanCoords(currPos+1);      % move to here
-    handles.scanCoords(currPos+1) = handles.scanCoords(currPos);
-    handles.scanCoords(currPos) = scTemp;
+    scTemp = handles.group(groupIndex).scanCoords(currPos+1);      % move to here
+    handles.group(groupIndex).scanCoords(currPos+1) = ...
+                            handles.group(groupIndex).scanCoords(currPos);
+    handles.group(groupIndex).scanCoords(currPos) = scTemp;
     
     % move the selected item up as well
     set(handles.listboxScanCoords,'Value',currPos+1);
@@ -824,7 +1067,9 @@ function pushButtonOptimize_Callback(hObject, eventdata, handles)
     % different algorithms could be used, this one should be fairly
     % simple, fast, and transparent (and close to optimal
     disp('Computing distance matrix...');
-    nScanCoords = length(handles.scanCoords);   % how many elements to optimize?
+    
+    groupIndex = handles.currentGroupIndex;
+    nScanCoords = length(handles.group(groupIndex).scanCoords);   % how many elements to optimize?
     
     if nScanCoords < 3
         % to short to optimize
@@ -888,7 +1133,7 @@ function pushButtonOptimize_Callback(hObject, eventdata, handles)
     % [pospath ]=tsp_ant(pathMat,100,100);
     %  [opt_rte ]=tsp_ga([(1:length(pathMat))' (1:length(pathMat))'],pathMat,1000,1000,1:length(pathMat));
     %  figure(hFig);
-    handles.scanCoords = handles.scanCoords(opt_rte);
+    handles.group(groupIndex).scanCoords = handles.group(groupIndex).scanCoords(opt_rte);
     
     % done, genetic algorithm everything
     guidata(hObject, handles);                  % Update handles structure before sending
@@ -905,7 +1150,7 @@ function pushButtonOptimize_Callback(hObject, eventdata, handles)
     dlgAns = questdlg('Optimize rotations (ROI orientations) as well?','','yes','no','no');
     if strcmp(dlgAns,'yes')
         disp('Starting orientation checker...');
-        handles.scanCoords=rotateoptimize(hObject,handles);
+        handles.group(groupIndex).scanCoords = rotateoptimize(hObject,handles);
     end
     
     guidata(hObject, handles);                  % Update handles structure before sending
@@ -924,7 +1169,9 @@ function pushButtonRandomizePath_Callback(hObject, eventdata, handles)
 % hObject    handle to pushButtonRandomizePath (see GCBO)
 % eventdata  reserved - to be defined in a future version of MATLAB
 % handles    structure with handles and user data (see GUIDATA)
-    nScanCoords = length(handles.scanCoords);
+    groupIndex = handles.currentGroupIndex;
+    
+    nScanCoords = length(handles.group(groupIndex).scanCoords);
     
     if nScanCoords < 3
         return           % nothing to shuffle
@@ -933,7 +1180,7 @@ function pushButtonRandomizePath_Callback(hObject, eventdata, handles)
     % make an array the same length as nScanCoords, and shuffle
     
     newOrder = [1 randperm(nScanCoords-1)+1];   % will start with 1 but be random after that
-    handles.scanCoords = handles.scanCoords(newOrder); 
+    handles.group(groupIndex).scanCoords = handles.group(groupIndex).scanCoords(newOrder); 
     updatePath(hObject,eventdata, handles);  
 
 
@@ -981,45 +1228,6 @@ function pushbuttonLineDone_Callback(hObject, eventdata, handles)
 handles = StopLine(hObject, eventdata, handles);
 
 
-function handles = StopLine(hObject, eventdata, handles) 
-    set(handles.toggleButtonAddLine,'Visible','on');
-    set(handles.pushbuttonLineDone,'Visible','off');
-    set(handles.pushbuttonNextLine,'Visible','off');
-    
-              
-        API = iptgetapi(handles.lineHandle);      
-        position= API.getPosition();              % get the line's position
-        API.delete();                             % delete the line
-            
-        startPoint = position(1,:);
-        endPoint = position(2,:);
-            
-        guidata(hObject, handles); 
-
-
-    %%%
-    
-    % store the line
-    lineName = ['line ' num2str(handles.lineIter)];
-    handles.lineIter = handles.lineIter + 1;
-    handles.drawingLine = false;
-    
-    sc = struct('scanShape', 'line', ...
-                'startPoint', startPoint, ...
-                'endPoint', endPoint, ...
-                'nLines', handles.nLines, ...
-                'orientation', 1, ...
-                'name', lineName );
-            
-    if strcmp(handles.scanCoords(1).scanShape,'blank')
-        handles.scanCoords(1) = sc;                             % this is the first element
-    else
-        handles.scanCoords(length(handles.scanCoords)+1) = sc;  % append to end
-    end
-    
-    guidata(hObject, handles);   % Update handles structure   
-    handles = updatePath(hObject, eventdata, handles);  % update the scan path
-    
 
 
 % --- Executes on button press in buttonLoadFakeData.
@@ -1125,3 +1333,9 @@ else
     set(handles.panelHiddenDiagnostic,'Visible','off');
 end
 
+
+% --- Executes when figure1 is resized.
+function figure1_ResizeFcn(hObject, eventdata, handles)
+% hObject    handle to figure1 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
