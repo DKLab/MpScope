@@ -76,7 +76,9 @@ function MpArbScanGUI_OpeningFcn(hObject, eventdata, handles, varargin)
     guidata(hObject, handles);    % Update handles structure
     
     pushButtonClearPath_Callback(hObject, eventdata, handles)  % set up blank path and image
-    
+    % prepare the scan coords listbox
+    set(handles.listboxScanCoords, 'String', {' '});
+    set(handles.listboxScanCoords, 'Value', 1);
     
     % no path, so assign the length zero (so Delpi knows), may not be necessary
     assignin('base','SCAN_path_len',int32(0) );
@@ -92,6 +94,97 @@ function varargout = MpArbScanGUI_OutputFcn(hObject, eventdata, handles)
 
 %% stand-alone functions 
 
+function [ groupIndex, scanCoordsIndex, listboxIndex ] = getListboxItem( handles )
+    % retrieve the currently selected item in the scan coords listbox.
+    % If the item can't be found in handles.group, then 0 is returned for
+    % the groupIndex and scanCoordsIndex.
+    % If the item is a group and not a line or a box, then groupIndex will
+    % have the correct number and scanCoordsIndex will be 0.
+    
+    listboxIndex = get(handles.listboxScanCoords,'Value');
+    listboxStringList = get(handles.listboxScanCoords, 'String');
+    
+    itemName = listboxStringList{listboxIndex};
+
+    % remove any HTML from the item name
+    itemName = regexprep(itemName, '<[^>]*>', '');
+    % remove any &nbsp; (HTML non blanking space)
+    itemName = strrep(itemName, '&nbsp;', '');
+    
+    % check if the user clicked on a group
+    if ~isempty( strfind(itemName, 'Group') )
+        % this is a group, not a line or box
+        % get the group number -- one or more digts followed by an open paranthesis '('
+        groupIndex = str2double( regexp(itemName, '\d+(?=\()', 'match') );
+        scanCoordsIndex = 0;
+        
+        if isnan(groupIndex)
+            groupIndex = 0;
+        end
+ 
+    else
+        % this is a line or a box, find the two indicies
+        [ groupIndex, scanCoordsIndex ] = findIndex( handles, itemName );
+    end
+
+function [ groupIndex, scanCoordsIndex ] = findIndex( handles, objectName )
+    % look through each scanCoords struct array within the handle.group
+    % struct array and return the index that the item was found at, or 0 if
+    % the item doesn't exist.
+    
+    groupIndex = 0;
+    scanCoordsIndex = 0;
+    
+    for searchGroupIndex = 1 : length( handles.group )
+       scanCoords = handles.group(searchGroupIndex).scanCoords;
+       
+       for searchScanCoordsIndex = 1 : length( scanCoords ) 
+            if strcmp( objectName, scanCoords(searchScanCoordsIndex).name );
+                % item has been found
+                groupIndex = searchGroupIndex;
+                scanCoordsIndex = searchScanCoordsIndex;
+            end
+       end
+       
+    end
+    
+function handles = moveListboxItem(handles, moveUpFlag)
+    % moves an item up or down -- changing its order in the scan coords
+    % listbox and changing the order that the path is drawn in
+    
+    % if moveUpFlag is true, the item will be moved up, if its false it
+    % will be moved down
+    
+     [groupIndex, scIndex, listboxIndex] = getListboxItem(handles);
+    
+    % if scIndex is 1 then this item can't be moved up any further, and if
+    % its 0 then this item is a group
+    if moveUpFlag
+        inBounds = scIndex > 1;
+        increment = -1;
+    else
+        inBounds = scIndex < length(handles.group(groupIndex).scanCoords);
+        increment = 1;
+    end
+    
+    
+    if groupIndex > 0 && inBounds;
+        
+        swapItem = handles.group(groupIndex).scanCoords(scIndex);
+        handles.group(groupIndex).scanCoords(scIndex) = ...
+                    handles.group(groupIndex).scanCoords(scIndex + increment);
+                
+        handles.group(groupIndex).scanCoords(scIndex + increment) = swapItem;
+        
+        % move the selected item as well
+        set(handles.listboxScanCoords,'Value', listboxIndex + increment );
+          
+        % the hObject being sent to updatePath is only used for guidata
+        % calls -- so any object in the figure can be used as 'hObject'
+        updatePath(handles.listboxScanCoords, [], handles);  % update the scan path
+    end        
+        
+        
 function handles = createGroup(handles, optional_GroupIndex)
     if exist('optional_GroupIndex', 'var')
         newIndex = optional_GroupIndex;
@@ -117,19 +210,33 @@ function handles = createGroup(handles, optional_GroupIndex)
         cycles = 1;
     end
     
+
     newScanCoords = struct('scanShape', 'blank', ...
                                 'startPoint', [], ...
                                 'endPoint', [], ...
                                 'nLines', [], ...
                                 'orientation', [], ...
                                 'name','<blank>');
+
     
     handles.group(newIndex) = struct(...
         'scanCoords', newScanCoords,...
         'cycles', cycles );
     
     handles.currentGroupIndex = newIndex;
+    
+    refreshListbox(handles);
+    
+    % select the second to last item in the listbox -- 
+    % this will be where the new group is
+    stringList = get( handles.listboxScanCoords, 'String' );
+    set( handles.listboxScanCoords, 'Value', length(stringList) - 1 );
+    
 
+function deleteGroup(handles, groupIndex)
+%TODO: Finish deleteGroup()
+    fprintf('delete group %d', groupIndex);
+    
 function mouseDown_Callback(hObject, ~)
     % Any number of graphics objects may have this callback registered as
     % the ButtonDownFcn.
@@ -188,8 +295,7 @@ function mouseDown_Callback(hObject, ~)
             case newGroup
                 handles = createGroup(handles);
             case newBox
-                %TODO: create new box
-                
+                pushButtonAddBox_Callback(hObject, [], handles);
             otherwise
                 return;
         end
@@ -197,24 +303,39 @@ function mouseDown_Callback(hObject, ~)
     
     guidata(hObject, handles);
     
+function refreshListbox(handles)
+    % make a cell structure of existing names
+    for groupIndex = 1 : length(handles.group)
+        if groupIndex == 1
+            strmat = sprintf('<HTML><b>Group 1</b>&nbsp;&nbsp;(x%d)</HTML>',...
+                        handles.group(groupIndex).cycles);
+        else
+            strmat = char(strmat, sprintf('<HTML><b>Group %d</b>&nbsp;&nbsp;(x%d)</HTML>', ...
+                        groupIndex, handles.group(groupIndex).cycles));
+        end
+
+        for scIndex = 1:length(handles.group(groupIndex).scanCoords)
+            strmat = char( strmat, ...
+                    sprintf('<HTML>&nbsp;&nbsp;&nbsp;&nbsp;%s</HTML>',...
+                        handles.group(groupIndex).scanCoords(scIndex).name));
+        end
+    end
+    set(handles.listboxScanCoords,'String',cellstr(strmat));
     
 
 function handles = updatePath(hObject, eventdata, handles,extra)
     % funtion is called whenever a new point is added to the scanCoords
-
+    
+    assignin('base', 'group', handles.group);
+ 
     fast = (nargin == 4) && strcmp(extra, 'fast');
 
     %fast = false; %jd - don't use this for now
 
-    % TESTING groupIndex: for now just set it to the current index, but in
-    % the future updatePath will likely need to iterate through all groups
-    % (and handle transitions between groups)
-    groupIndex = handles.currentGroupIndex;
     
     % create a list of scanCoords that includes the scanCoords from every
     % group
     nGroups = length(handles.group);
-    scIndex = 1;
     scanCoords = [];        % the struct array that will hold the full scan path
                     % with all group cycles included
                     
@@ -244,64 +365,48 @@ function handles = updatePath(hObject, eventdata, handles,extra)
         for i = 1:length(scanCoords)
             sc = scanCoords(i);
             
-            if strcmp(sc.scanShape,'blank')
-                break                       % nothing to mark
-            end
-            % mark start and end point
-            plot(sc.startPoint(1),sc.startPoint(2),'g*')
-            plot(sc.endPoint(1),sc.endPoint(2),'r*')
-        
-            % find a point to place text
-            placePoint = sc.startPoint + .1*(sc.endPoint-sc.startPoint);
-            text(placePoint(1),placePoint(2),sc.name,'color','red')
-        
-            % draw a line or box (depending on data structure type)
-            if strcmp(sc.scanShape,'line')
-                line([sc.startPoint(1) sc.endPoint(1)],[sc.startPoint(2) sc.endPoint(2)])
-            elseif strcmp(sc.scanShape,'box')
-                % width and height must be > 0 to draw a box
-                boxXmin = min([sc.startPoint(1),sc.endPoint(1)]);
-                boxXmax = max([sc.startPoint(1),sc.endPoint(1)]);
-                boxYmin = min([sc.startPoint(2),sc.endPoint(2)]);
-                boxYmax = max([sc.startPoint(2),sc.endPoint(2)]);
-                
-                rectangle('Position',[boxXmin,boxYmin, ...
-                    boxXmax-boxXmin,boxYmax-boxYmin], ...
-                    'EdgeColor','green');
+            if ~strcmp(sc.scanShape,'blank')
+
+                % mark start and end point
+                plot(sc.startPoint(1),sc.startPoint(2),'g*')
+                plot(sc.endPoint(1),sc.endPoint(2),'r*')
+
+                % find a point to place text
+                placePoint = sc.startPoint + .1*(sc.endPoint-sc.startPoint);
+                text(placePoint(1),placePoint(2),sc.name,'color','red')
+
+                % draw a line or box (depending on data structure type)
+                if strcmp(sc.scanShape,'line')
+                    line([sc.startPoint(1) sc.endPoint(1)],[sc.startPoint(2) sc.endPoint(2)])
+                elseif strcmp(sc.scanShape,'box')
+                    % width and height must be > 0 to draw a box
+                    boxXmin = min([sc.startPoint(1),sc.endPoint(1)]);
+                    boxXmax = max([sc.startPoint(1),sc.endPoint(1)]);
+                    boxYmin = min([sc.startPoint(2),sc.endPoint(2)]);
+                    boxYmax = max([sc.startPoint(2),sc.endPoint(2)]);
+
+                    rectangle('Position',[boxXmin,boxYmin, ...
+                        boxXmax-boxXmin,boxYmax-boxYmin], ...
+                        'EdgeColor','green');
+                end
             end
         end
     end % fast 
     
     if ~fast
         % update the listbox
-        % make a cell structure of existing names
-        
-        for groupIndex = 1 : length(handles.group)
-            if groupIndex == 1
-                strmat = sprintf('<HTML><b>Group 1</b>&nbsp;&nbsp;(x%d)</HTML>',...
-                            handles.group(groupIndex).cycles);
-            else
-                strmat = char(strmat, sprintf('<HTML><b>Group %d</b>&nbsp;&nbsp;(x%d)</HTML>', ...
-                            groupIndex, handles.group(groupIndex).cycles));
-            end
-            
-            for scIndex = 1:length(handles.group(groupIndex).scanCoords)
-                strmat = char( strmat, ...
-                        sprintf('<HTML>&nbsp;&nbsp;&nbsp;&nbsp;%s</HTML>',...
-                            handles.group(groupIndex).scanCoords(scIndex).name));
-            end
-        end
-        set(handles.listboxScanCoords,'String',cellstr(strmat));
+        refreshListbox(handles);
     end % fast
         
     % update the actual path
     handles.path = [];          % clear previously set path
-        
+     
+
     if strcmp(scanCoords(1).scanShape,'blank')
         guidata(hObject, handles);
-        return   % no path to find
+        return;   % no path to find
     end
-        
+    
     % actual scan path is created here!
     % pathObjNum and pathObjSumNum are also created here ...
     
@@ -432,7 +537,7 @@ function handles = StartNewLine(hObject, ~, handles)
         handles.drawingLine = true; 
         handles.lineHandle = imline(gca,[startPoint(1) endPoint(1)],[startPoint(2) endPoint(2)]);
         guidata(hObject, handles);
-        return
+        return;
     end
 
 
@@ -468,8 +573,10 @@ function handles = StopLine(hObject, eventdata, handles)
     
     groupIndex = handles.currentGroupIndex;
             
-    if strcmp(handles.group(groupIndex).scanCoords(1).scanShape,'blank')
-        handles.group(groupIndex).scanCoords(1) = sc;                             % this is the first element
+    if isempty(handles.group(groupIndex).scanCoords) || ...
+            strcmp(handles.group(groupIndex).scanCoords(1).scanShape, 'blank')
+        
+        handles.group(groupIndex).scanCoords = sc;                             % this is the first element
     else
         handles.group(groupIndex).scanCoords( end + 1 ) = sc;  % append to end
     end
@@ -491,7 +598,7 @@ function handles = StopLine(hObject, eventdata, handles)
 % --- BUTTON - Add Line
 function toggleButtonAddLine_Callback(hObject, eventdata, handles)
 
-    StartNewLine(hObject, eventdata, handles) 
+    StartNewLine(hObject, eventdata, handles);
     
     
     
@@ -515,8 +622,10 @@ function pushButtonAddBox_Callback(hObject, eventdata, handles)
     
     groupIndex = handles.currentGroupIndex;
     
-    if strcmp(handles.group(groupIndex).scanCoords(1).scanShape,'blank')
-        handles.group(groupIndex).scanCoords(1) = sc;                            % this is the first element
+    if isempty(handles.group(groupIndex).scanCoords) || ...
+            strcmp(handles.group(groupIndex).scanCoords(1).scanShape, 'blank')
+        
+        handles.group(groupIndex).scanCoords = sc;                            % this is the first element
     else
         handles.group(groupIndex).scanCoords( end + 1 ) = sc; % append to end
     end
@@ -546,6 +655,7 @@ function pushButtonDrawPath_Callback(hObject, eventdata, handles)
     
     groupIndex = handles.currentGroupIndex;
     
+
     if strcmp(handles.group(groupIndex).scanCoords(1).scanShape,'blank')
         % first element is blank (no path to draw!)
         helpdlg('no path to draw ...')
@@ -596,20 +706,25 @@ function pushButtonClearPath_Callback(hObject, eventdata, handles)
 %         handles = StopLine(hObject, eventdata, handles);
 %     end
     
-    groupIndex = handles.currentGroupIndex;
+    % delete everything except the first group
+    handles.currentGroupIndex = 1;
+    handles.group( 2 : end ) = [];
+    
+
+    handles.group(1).scanCoords = struct('scanShape', 'blank', ...
+                                    'startPoint', [], ...
+                                    'endPoint', [], ...
+                                    'nLines', [], ...
+                                    'orientation', [], ...
+                                    'name','<blank>');
+                                     % will become the array of the scanstructure,
+                                     % note the first element is 'blank'
   
-    handles.group(groupIndex).scanCoords = struct('scanShape', 'blank', ...
-                                'startPoint', [], ...
-                                'endPoint', [], ...
-                                'nLines', [], ...
-                                'orientation', [], ...
-                                'name','<blank>');
-                                 % will become the array of the scanstructure,
-                                 % note the first element is 'blank'
+    set(handles.listboxScanCoords, 'Value', 1);
     guidata(hObject, handles);   % Update handles structure
     updatePath(hObject, eventdata, handles);
     
-    pushButtonClearGraph_Callback(hObject, eventdata, handles)
+    pushButtonClearGraph_Callback(hObject, eventdata, handles);
 
 
 % --- BUTTON - Clear Graph
@@ -794,39 +909,25 @@ function pushDeletePathElement_Callback(hObject, eventdata, handles)
 %     if handles.drawingLine == true,
 %         handles = StopLine(hObject, eventdata, handles);
 %     end
-    
-    groupIndex = handles.currentGroupIndex;
-    
-    if length(handles.group(groupIndex).scanCoords) <= 1
-        % only one or fewer elements, just reset the scan coordinates
-        pushButtonClearPath_Callback(hObject, eventdata, handles)
-        
-    else
-        % TODO: will need to convert the listbox index into the
-        % group/scanCoords index pair
-        
-        % find the selected element, and cut it
-        elementIndex = get(handles.listboxScanCoords,'Value');
-        set(handles.listboxScanCoords,'Value',1)
-        
-        % The code in the comment block below can be replaced by one line:
-        handles.group(groupIndex).scanCoords(elementIndex) = [];
-        %{
-        if length(handles.scanCoords) == elementIndex
-            % cut last element
-            handles.scanCoords = handles.scanCoords(1:end-1);
-        else
-            % cut element from middle
-            handles.scanCoords = [handles.scanCoords(1:elementIndex-1) ...
-                                  handles.scanCoords(elementIndex+1:end)];
-        end
-        %}
-        
-        % update here, otherwise, scanCoords gets overwritten when deleting first element
-        guidata(hObject, handles);   % Update handles structure
-        updatePath(hObject, eventdata, handles);
-    end
 
+   [groupIndex, scIndex, listboxIndex ] = getListboxItem(handles);
+   
+   if groupIndex > 0
+       if scIndex == 0
+           % this is a group
+           deleteGroup(handles, groupIndex);
+       else
+           % this is a line or a box
+            set(handles.listboxScanCoords, 'Value', listboxIndex - 1);
+            
+            handles.group(groupIndex).scanCoords(scIndex) = [];
+        end
+   end
+   
+   % update here, otherwise, scanCoords gets overwritten when deleting first element
+    guidata(hObject, handles);   % Update handles structure
+    updatePath(hObject, eventdata, handles);
+    pushButtonClearGraph_Callback(hObject, eventdata, handles);
 
 % --- BUTTON pushButtonLoadImage
 function pushButtonLoadImage_Callback(hObject, eventdata, handles)
@@ -918,50 +1019,14 @@ function pushButtonRunMaskPath_Callback(hObject, eventdata, handles)
 
 % --- BUTTON - Move Up (moves scan item up list)
 function pushButtonMoveUp_Callback(hObject, eventdata, handles)
-    lb = get(handles.listboxScanCoords);        % current position
-    currPos = lb.Value;
+    handles = moveListboxItem(handles, true);
+    guidata(hObject, handles);
     
-    if currPos == 1                             % already at the start
-        return
-    end
-    
-    groupIndex = handles.currentGroupIndex;
-    
-    % standard swap 
-    scTemp = handles.group(groupIndex).scanCoords(currPos-1);    % move to here
-    handles.group(groupIndex).scanCoords(currPos-1) = ...
-                             handles.group(groupIndex).scanCoords(currPos);
-    handles.group(groupIndex).scanCoords(currPos) = scTemp;
-    
-    % move the selected item up as well
-    set(handles.listboxScanCoords,'Value',currPos-1);
-    
-    guidata(hObject, handles);   % Update handles structure   
-    updatePath(hObject, eventdata, handles);  % update the scan path
-
 % --- BUTTON - Move Down (moves scan item down list)
 function pushButtonMoveDown_Callback(hObject, eventdata, handles)
-    lb = get(handles.listboxScanCoords);         % current position
-    currPos = lb.Value;
+    handles = moveListboxItem(handles, false);         
+    guidata(hObject, handles);
     
-    groupIndex = handles.currentGroupIndex;
-    
-    if currPos == length(handles.group(groupIndex).scanCoords)     % already at the end
-        return
-    end
-    
-    % standard swap 
-    scTemp = handles.group(groupIndex).scanCoords(currPos+1);      % move to here
-    handles.group(groupIndex).scanCoords(currPos+1) = ...
-                            handles.group(groupIndex).scanCoords(currPos);
-    handles.group(groupIndex).scanCoords(currPos) = scTemp;
-    
-    % move the selected item up as well
-    set(handles.listboxScanCoords,'Value',currPos+1);
-    
-    guidata(hObject, handles);                % Update handles structure   
-    updatePath(hObject, eventdata, handles);  % update the scan path
-        
 %% Other objects (LISTBOX)
     
 % --- Executes on selection change in listboxScanCoords.
@@ -1236,7 +1301,7 @@ function buttonLoadFakeData_Callback(hObject, eventdata, handles)
 % eventdata  reserved - to be defined in a future version of MATLAB
 % handles    structure with handles and user data (see GUIDATA)
     
-    evalin('base','MpData.framesCh1 = randn(500,500);');
+    evalin('base','MpData.framesCh1 = zeros(500,500);');
     evalin('base','MpData.startVoltageX = -2;');
     evalin('base','MpData.stopVoltageX = +2;');
     evalin('base','MpData.startVoltageY = -2;');
@@ -1253,7 +1318,7 @@ function buttonLoadFakeData_Callback(hObject, eventdata, handles)
     handles.pixelsToShift = [evalin('base','MpData.pixelsToShiftX'),evalin('base','MpData.pixelsToShiftY')];
     set(handles.editPixelDwellTime,'String',num2str(handles.pixelDwellTime*1e6,'%0.3f'));
     guidata(hObject, handles);             % Update handles structure (save the image)
-    pushButtonClearGraph_Callback(hObject, eventdata, handles) % updates graph (draws image)
+    pushButtonClearGraph_Callback(hObject, eventdata, handles); % updates graph (draws image)
 
 
     
