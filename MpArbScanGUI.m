@@ -93,7 +93,7 @@ function varargout = MpArbScanGUI_OutputFcn(hObject, eventdata, handles)
 
 
 %% stand-alone functions 
-
+    
 function [ groupIndex, scanCoordsIndex, listboxIndex ] = getListboxItem( handles )
     % retrieve the currently selected item in the scan coords listbox.
     % If the item can't be found in handles.group, then 0 is returned for
@@ -202,7 +202,14 @@ function handles = createGroup(handles, optional_GroupIndex)
         defAns = {'1'};
         cyclesStr = inputdlg( prompt, dlg_title, 1, defAns);
 
+        if isempty(cyclesStr)
+            % user cancled dialog box -- don't create a new group afterall
+            return;
+        end
+        
+        
         cycles = str2double(cyclesStr{1});
+
         if isnan(cycles)
             cycles = 1;
         end
@@ -227,15 +234,27 @@ function handles = createGroup(handles, optional_GroupIndex)
     
     refreshListbox(handles);
     
-    % select the second to last item in the listbox -- 
+    % select the last item in the listbox -- 
     % this will be where the new group is
     stringList = get( handles.listboxScanCoords, 'String' );
-    set( handles.listboxScanCoords, 'Value', length(stringList) - 1 );
+    set( handles.listboxScanCoords, 'Value', length(stringList) );
     
 
-function deleteGroup(handles, groupIndex)
-%TODO: Finish deleteGroup()
-    fprintf('delete group %d', groupIndex);
+function handles = deleteGroup(handles, groupIndex)
+
+    % user can delete any group except group 1
+    if groupIndex > 1
+        % set the scan coords listbox to the first element (this is
+        % guaranteed to still exist)
+        set(handles.listboxScanCoords, 'Value', 1);
+        
+        handles.group(groupIndex) = [];
+        
+        % and reset the current group index to the last group
+        handles.currentGroupIndex = length(handles.group);
+    elseif groupIndex == 1
+        disp('Cannot delete Group 1');
+    end
     
 function mouseDown_Callback(hObject, ~)
     % Any number of graphics objects may have this callback registered as
@@ -294,19 +313,24 @@ function mouseDown_Callback(hObject, ~)
                 handles = StartNewLine(hObject, [], handles);
             case newGroup
                 handles = createGroup(handles);
+                guidata(hObject, handles);
             case newBox
-                pushButtonAddBox_Callback(hObject, [], handles);
+                handles = addBox(handles);
+                guidata(hObject, handles);
+                updatePath(hObject, [], handles);
             otherwise
                 return;
         end
     end
     
-    guidata(hObject, handles);
+    
     
 function refreshListbox(handles)
     % make a cell structure of existing names
     for groupIndex = 1 : length(handles.group)
         if groupIndex == 1
+            % handle group 1 seperately -- this is always the first item in
+            % the list
             strmat = sprintf('<HTML><b>Group 1</b>&nbsp;&nbsp;(x%d)</HTML>',...
                         handles.group(groupIndex).cycles);
         else
@@ -315,9 +339,11 @@ function refreshListbox(handles)
         end
 
         for scIndex = 1:length(handles.group(groupIndex).scanCoords)
-            strmat = char( strmat, ...
+            if ~strcmp( handles.group(groupIndex).scanCoords(scIndex).scanShape, 'blank') 
+                strmat = char( strmat, ...
                     sprintf('<HTML>&nbsp;&nbsp;&nbsp;&nbsp;%s</HTML>',...
                         handles.group(groupIndex).scanCoords(scIndex).name));
+            end
         end
     end
     set(handles.listboxScanCoords,'String',cellstr(strmat));
@@ -326,12 +352,12 @@ function refreshListbox(handles)
 function handles = updatePath(hObject, eventdata, handles,extra)
     % funtion is called whenever a new point is added to the scanCoords
     
-    assignin('base', 'group', handles.group);
  
     fast = (nargin == 4) && strcmp(extra, 'fast');
 
     %fast = false; %jd - don't use this for now
 
+    assignin('base', 'scanCoords', handles.group(1).scanCoords);
     
     % create a list of scanCoords that includes the scanCoords from every
     % group
@@ -402,7 +428,7 @@ function handles = updatePath(hObject, eventdata, handles,extra)
     handles.path = [];          % clear previously set path
      
 
-    if strcmp(scanCoords(1).scanShape,'blank')
+    if isempty(scanCoords) || strcmp(scanCoords(1).scanShape,'blank')
         guidata(hObject, handles);
         return;   % no path to find
     end
@@ -585,25 +611,8 @@ function handles = StopLine(hObject, eventdata, handles)
     handles = updatePath(hObject, eventdata, handles);  % update the scan path
     
     
-
-
-
     
-    
-    
-    
-%% BUTTONS    
-
-
-% --- BUTTON - Add Line
-function toggleButtonAddLine_Callback(hObject, eventdata, handles)
-
-    StartNewLine(hObject, eventdata, handles);
-    
-    
-    
-% --- BUTTON - Add Box
-function pushButtonAddBox_Callback(hObject, eventdata, handles)
+function handles = addBox(handles)
     startPoint = ginput(1);
     plot(startPoint(1),startPoint(2),'g*')
 
@@ -629,9 +638,28 @@ function pushButtonAddBox_Callback(hObject, eventdata, handles)
     else
         handles.group(groupIndex).scanCoords( end + 1 ) = sc; % append to end
     end
-       
-    guidata(hObject, handles);   % Update handles structure 
+
+
+
     
+    
+    
+    
+%% BUTTONS    
+
+
+% --- BUTTON - Add Line
+function toggleButtonAddLine_Callback(hObject, eventdata, handles)
+
+    StartNewLine(hObject, eventdata, handles);
+    
+    
+    
+% --- BUTTON - Add Box
+function pushButtonAddBox_Callback(hObject, eventdata, handles)
+    handles = addBox(handles);
+    
+    guidata(hObject, handles);   % Update handles structure 
     updatePath(hObject, eventdata, handles);
     
     
@@ -653,14 +681,14 @@ function pushButtonDrawPath_Callback(hObject, eventdata, handles)
     %   imagesc(handles.axisLimCol,handles.axisLimRow,handles.im);colormap('gray');axis image; axis off
     %   hold on;plot(handles.path(:,1),handles.path(:,2),'w.');hold off
     
+    %{
     groupIndex = handles.currentGroupIndex;
-    
-
     if strcmp(handles.group(groupIndex).scanCoords(1).scanShape,'blank')
         % first element is blank (no path to draw!)
         helpdlg('no path to draw ...')
         return
     end
+    %}
     
     nPoints = size(handles.path,1);
 
@@ -751,7 +779,6 @@ function pushButtonClearGraph_Callback(hObject, eventdata, handles)
         set(imageHandle, 'ButtonDownFcn', @mouseDown_Callback);
 
         % just in case the user clicks somewhere other than the image:
-        set(gcf, 'ButtonDownFcn', @mouseDown_Callback);
         set(gca, 'ButtonDownFcn', @mouseDown_Callback);
         
         axis on
@@ -915,7 +942,7 @@ function pushDeletePathElement_Callback(hObject, eventdata, handles)
    if groupIndex > 0
        if scIndex == 0
            % this is a group
-           deleteGroup(handles, groupIndex);
+           handles = deleteGroup(handles, groupIndex);
        else
            % this is a line or a box
             set(handles.listboxScanCoords, 'Value', listboxIndex - 1);
