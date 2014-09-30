@@ -84,6 +84,7 @@ function MpArbScanGUI_OpeningFcn(hObject, eventdata, handles, varargin)
     assignin('base','SCAN_path_len',int32(0) );
     
     set(gcf,'name','MpArbScanGUI v0.10');   
+    set(gcf, 'ButtonDownFcn', @testScan);
     
     % uiwait(handles.figure1);   % UIWAIT makes MpArbScanGUI wait for user response (see UIRESUME)
     
@@ -93,6 +94,216 @@ function varargout = MpArbScanGUI_OutputFcn(hObject, eventdata, handles)
 
 
 %% stand-alone functions 
+    
+function testScan(hObject, ~)
+    % simulates the arb scan by pulling the pixel values from under the current scan path
+    
+    answer = questdlg('Make a test scan?');
+    
+    if ~strcmp(answer, 'Yes')
+        return;
+    end
+    
+    nCycles = 500;
+    
+    handles = guidata(hObject);
+    
+    im = handles.im;
+    path = handles.path;
+    
+    %scale = length(path) / 1000;
+    %TESTING
+    scale = 1;
+    %END TESTING
+    if scale < 1
+        scale = 1;
+    end
+    
+    width = round(length(path) / scale);
+    height = nCycles;
+    if width == 0
+        width = 50;
+    end
+    if height == 0
+        height = 50;
+    end
+    
+    scanImage = zeros( height, width );
+    
+    yConversion = size(im, 1) / (handles.axisLimRow(2) - handles.axisLimRow(1));
+    xConversion = size(im, 2) / (handles.axisLimCol(2) - handles.axisLimCol(1));
+    yOffset = size(im, 1) / 2;
+    xOffset = size(im, 2) / 2;
+    
+    pathLength = length(path);
+    
+    dScanFactor = 1/(pathLength);
+    scanFactor = nCycles;
+    
+    for cycleIndex = 1 : nCycles
+        
+        % for every pixel that is captured, decrease the intensity continuously
+        % over time to visually show the time dependance of the scan
+        
+        for pathIndex = 1 : pathLength
+            scanFactor = scanFactor - dScanFactor; 
+            
+            y = round(path(pathIndex, 2) * yConversion + yOffset);
+            x = round(path(pathIndex, 1) * xConversion + xOffset);
+
+            scanImage( cycleIndex, pathIndex ) = scanFactor * im(x,y);
+        end
+    end
+
+    
+    scanImage(:,1) = 8 * nCycles;     % normalize the colors
+    
+    makeHDF(handles, scanImage);
+
+    
+    
+function makeHDF(handles, scanImage)
+    % create an HDF5 file from a test scan for the Path Analyzer
+    saveFileName = uiputfile('testScan.h5','Save file name');
+    image = handles.im;
+    imageHeight = size(image, 1);
+    imageWidth = size(image, 2);
+    
+    scanWidth = size(scanImage, 2);
+    scanHeight = size(scanImage, 1);
+
+    % most of these values were just copied from sample data
+    configAttributes = struct(...
+        'AuxAnaRate', 0.0, ...
+        'FrameFractionActive', 1.0, ...
+        'FrameHeightFull', imageHeight, ...
+        'FrameHeightRaster', imageWidth, ...
+        'FrameLimit', scanHeight, ...
+        'FrameRate', 0.0, ...
+        'FrameWidthVisible', scanWidth, ...
+        'InputScaleCh1_V', 1.0, ...
+        'InputScaleCh2_V', 5.0, ...
+        'InputScaleCh3_V', 1.0, ...
+        'InputScaleCh4_V', 10.0, ...
+        'InterlaceLineScans', 0.0, ...
+        'LaserPower', 0.0, ...
+        'LaserPowerDoubleEveryZ', 0.0, ...
+        'LaserRefPos', 0.0, ...
+        'LaserRefPower', 0.0, ...
+        'MainBoardChEnabled', 13, ...
+        'MainBoardChUseForImaging', 1234, ...
+        'MirrorVoltageOffsetX_V', 0.0, ...
+        'MirrorVoltageOffsetY_V', 0.0, ...
+        'PhotonCountingChEnabled', 0.0, ...
+        'PixelRate_Hz', 952380.9523809524, ...
+        'RotationAngle', 0.0, ...
+        'ScanMode', 'ArbScan', ...
+        'ScannerAccArbscan', 0.0, ...
+        'ScannerAccRaster', 0.0, ...
+        'ScannerAmpX_V', 0.0, ...
+        'ScannerDelayX', 0.0, ...
+        'ScannerDelayY', 0.0, ...
+        'StackStepSize', -0.9375, ...
+        'StagePosX', 4010.0, ...
+        'StagePosY', 6924.0, ...
+        'StagePosZ', 1949.3, ...
+        'ZoomValue', 10.0 );
+    
+    scanData = struct(...
+        'dt', handles.pixelDwellTime,...
+        'fs', 952380.9523809524,...
+        'scanStepSize', handles.scanStepSize,...
+        'returnedPath', handles.returnedPath,...
+        'maxAcc', handles.maxAcc,...
+        'axisLimRow', handles.axisLimRow,...
+        'axisLimCol', handles.axisLimCol,...
+        'scanVelocity', 1);
+    
+    % write the data to a new HDF5 file
+    
+    fcpl = H5P.create('H5P_FILE_CREATE');
+    fapl = H5P.create('H5P_FILE_ACCESS');
+    fid = H5F.create(saveFileName,'H5F_ACC_TRUNC',fcpl,fapl);
+    
+    % create the Config, ArbScan, and Image groups
+    plist = 'H5P_DEFAULT';
+    
+    gid = H5G.create(fid,'Config',plist,plist,plist);
+    H5G.close(gid);
+    
+    gid = H5G.create(fid,'ArbScanPath',plist,plist,plist);
+    H5G.close(gid);
+    
+    gid = H5G.create(fid,'ImageCh1',plist,plist,plist);
+    H5G.close(gid);
+    
+    % close the low level IDs -- the high level HDF5 functions will take
+    % care of file/group IDs
+    H5F.close(fid);
+
+    attributeList = fieldnames(configAttributes);
+    for attributeIndex = 1 : length(attributeList)
+        attributeName = attributeList{attributeIndex};
+        attributeValue = configAttributes.(attributeList{attributeIndex});
+        
+        h5writeatt(saveFileName, '/Config', attributeName, attributeValue);
+    end
+    
+    % now the ArbScanPath group
+    attributeList = fieldnames(scanData);
+    for attributeIndex = 1 : length(attributeList)
+        attributeName = attributeList{attributeIndex};
+        attributeValue = scanData.(attributeList{attributeIndex});
+
+        h5writeatt(saveFileName, '/ArbScanPath', attributeName, attributeValue);
+    end
+    
+    % write the scan coords as attributes
+    scanCoords = flattenScanGroups(handles.group);
+    nScanCoords = size(scanCoords, 2);
+    
+    for scIndex = 1 : nScanCoords
+       
+       rootName = sprintf('scanCoords%08d', scIndex);
+       
+       h5writeatt(saveFileName, '/ArbScanPath', ...
+           [rootName, '.startPoint'], scanCoords(scIndex).startPoint);
+       
+       h5writeatt(saveFileName, '/ArbScanPath', ...
+           [rootName, '.endPoint'], scanCoords(scIndex).endPoint);
+       
+       h5writeatt(saveFileName, '/ArbScanPath', ...
+           [rootName, '.scanShape'], scanCoords(scIndex).scanShape);
+       
+       h5writeatt(saveFileName, '/ArbScanPath', ...
+           [rootName, '.nLines'], scanCoords(scIndex).nLines);
+       
+       h5writeatt(saveFileName, '/ArbScanPath', ...
+           [rootName, '.orientation'], scanCoords(scIndex).orientation);
+       
+       h5writeatt(saveFileName, '/ArbScanPath', ...
+           [rootName, '.name'], scanCoords(scIndex).name);
+                        
+    end
+    
+    
+    % create the four datasets in ArbScanPath group
+    h5create(saveFileName, '/ArbScanPath/im', size(handles.im));
+    h5create(saveFileName, '/ArbScanPath/path', size(handles.path));
+    h5create(saveFileName, '/ArbScanPath/pathObjNum', size(handles.pathObjNum));
+    h5create(saveFileName, '/ArbScanPath/pathObjSubNum', size(handles.pathObjSubNum));
+    
+    h5write(saveFileName, '/ArbScanPath/im', handles.im);
+    h5write(saveFileName, '/ArbScanPath/path', handles.path);
+    h5write(saveFileName, '/ArbScanPath/pathObjNum', handles.pathObjNum);
+    h5write(saveFileName, '/ArbScanPath/pathObjSubNum', handles.pathObjSubNum);
+
+    % and finally, the scan image
+    rotatedScanImage = transpose(scanImage);
+    h5create(saveFileName, '/ImageCh1/00000001', size(rotatedScanImage));
+    h5write(saveFileName, '/ImageCh1/00000001', rotatedScanImage);
+    msgbox('Test Scan Complete');
+         
     
 function [ groupIndex, scanCoordsIndex, listboxIndex ] = getListboxItem( handles )
     % retrieve the currently selected item in the scan coords listbox.
@@ -347,7 +558,34 @@ function refreshListbox(handles)
         end
     end
     set(handles.listboxScanCoords,'String',cellstr(strmat));
-    
+
+function scanCoords = flattenScanGroups(group)
+    % create a list of scanCoords that includes the scanCoords from every
+    % group
+    nGroups = length(group);
+    scanCoords = [];        % the struct array that will hold the full scan path
+                    % with all group cycles included
+                    
+    for groupIndex = 1 : nGroups
+        cycles = group(groupIndex).cycles;
+        
+        newScanCoords = group(groupIndex).scanCoords;
+ 
+        % handle repetitions (the first cycle is already accounted for)
+        while cycles > 1
+            cycles = cycles - 1;
+            newScanCoords = [ newScanCoords, ...
+                                    group(groupIndex).scanCoords ];      
+        end
+        
+        if isempty(scanCoords)
+            scanCoords = newScanCoords;
+        else
+            % (preallocating scanCoords may be tricky -- would need a seperate loop
+            % before this one to calculate the total length that sc will be)
+            scanCoords = [ scanCoords, newScanCoords];
+        end 
+    end
 
 function handles = updatePath(hObject, eventdata, handles,extra)
     % funtion is called whenever a new point is added to the scanCoords
@@ -359,32 +597,7 @@ function handles = updatePath(hObject, eventdata, handles,extra)
 
     assignin('base', 'scanCoords', handles.group(1).scanCoords);
     
-    % create a list of scanCoords that includes the scanCoords from every
-    % group
-    nGroups = length(handles.group);
-    scanCoords = [];        % the struct array that will hold the full scan path
-                    % with all group cycles included
-                    
-    for groupIndex = 1 : nGroups
-        cycles = handles.group(groupIndex).cycles;
-        
-        newScanCoords = handles.group(groupIndex).scanCoords;
- 
-        % handle repetitions (the first cycle is already accounted for)
-        while cycles > 1
-            cycles = cycles - 1;
-            newScanCoords = [ newScanCoords, ...
-                                    handles.group(groupIndex).scanCoords ];      
-        end
-        
-        if isempty(scanCoords)
-            scanCoords = newScanCoords;
-        else
-            % (preallocating scanCoords may be tricky -- would need a seperate loop
-            % before this one to calculate the total length that sc will be)
-            scanCoords = [ scanCoords, newScanCoords];
-        end 
-    end
+    scanCoords = flattenScanGroups(handles.group);
     
     if ~fast
         % plot the start and endpoints on the graph, and place text
@@ -1155,7 +1368,10 @@ function editDrawEveryPoints_CreateFcn(hObject, eventdata, handles)
 % --- BUTTON - Optimize Path
 
 function pushButtonOptimize_Callback(hObject, eventdata, handles)
-      % function uses random iterations to find a more correct path ...
+    disp('The Optimize Path function is not working at the moment: it still needs to be updated to handle groups.');
+    return;
+
+    % function uses random iterations to find a more correct path ...
     % different algorithms could be used, this one should be fairly
     % simple, fast, and transparent (and close to optimal
     disp('Computing distance matrix...');
@@ -1328,7 +1544,38 @@ function buttonLoadFakeData_Callback(hObject, eventdata, handles)
 % eventdata  reserved - to be defined in a future version of MATLAB
 % handles    structure with handles and user data (see GUIDATA)
     
-    evalin('base','MpData.framesCh1 = zeros(500,500);');
+    % create a test image
+    M = 500;
+    stripeImage = zeros(M,M);
+    stripeWidth = 10;
+    stripeCenter = round([ M/4, M/2, M * 2/3 ]);
+    
+    stripeImage( :, stripeCenter(1) - 10 : stripeCenter(1) + 10) = 1;
+    stripeImage( :, stripeCenter(2) - 10 : stripeCenter(2) + 10) = 2;
+    stripeImage( :, stripeCenter(3) - 10 : stripeCenter(3) + 10) = 3;
+    
+    stripeImage( stripeCenter(1) - 10 : stripeCenter(1) + 10, : ) = 1;
+    stripeImage( stripeCenter(2) - 10 : stripeCenter(2) + 10, : ) = 2;
+    stripeImage( stripeCenter(3) - 10 : stripeCenter(3) + 10, : ) = 3;
+    
+    stripeImage( M/2, M/2 ) = 8;
+    
+    
+    
+
+
+    MpData.framesCh1 = stripeImage; 
+    MpData.startVoltageX = -2;
+    MpData.stopVoltageX = +2;
+    MpData.startVoltageY = -2;
+    MpData.stopVoltageY = +2;
+    MpData.pixelDwellTime = 1e-6;
+    MpData.pixelsToShiftX = 77;
+    MpData.pixelsToShiftY = 77;
+    
+    assignin('base', 'MpData', MpData);
+    %{
+    evalin('base','MpData.framesCh1 = stripeImage'); 
     evalin('base','MpData.startVoltageX = -2;');
     evalin('base','MpData.stopVoltageX = +2;');
     evalin('base','MpData.startVoltageY = -2;');
@@ -1336,6 +1583,7 @@ function buttonLoadFakeData_Callback(hObject, eventdata, handles)
     evalin('base','MpData.pixelDwellTime = 1e-6;');
     evalin('base','MpData.pixelsToShiftX = 77;');
     evalin('base','MpData.pixelsToShiftY = 77;');
+    %}
     
     % assigned data to handles structure, and update
     handles.im = evalin('base','MpData.framesCh1;');   % load the fake image data
