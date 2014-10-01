@@ -164,23 +164,29 @@ function testScan(hObject, ~)
     
 function makeHDF(handles, scanImage)
     % create an HDF5 file from a test scan for the Path Analyzer
-    saveFileName = uiputfile('testScan.h5','Save file name');
+    [saveFileName, saveFilePath] = uiputfile('testScan.h5','Save file name');
     image = handles.im;
     imageHeight = size(image, 1);
     imageWidth = size(image, 2);
     
-    scanWidth = size(scanImage, 2);
-    scanHeight = size(scanImage, 1);
+    
+    rotatedScanImage = transpose(scanImage);
+    halfIndex = round( size(rotatedScanImage,2) / 2 );
+    frame1 = rotatedScanImage( :, 1 : halfIndex );
+    frame2 = rotatedScanImage( :, halfIndex + 1 : end );
+    
+    frameWidth = size(frame1, 1);
+    frameHeight = size(frame1, 2);
 
     % most of these values were just copied from sample data
     configAttributes = struct(...
         'AuxAnaRate', 0.0, ...
         'FrameFractionActive', 1.0, ...
-        'FrameHeightFull', imageHeight, ...
-        'FrameHeightRaster', imageWidth, ...
-        'FrameLimit', scanHeight, ...
+        'FrameHeightFull', frameHeight, ...
+        'FrameHeightRaster', imageHeight, ...
+        'FrameLimit', 2, ...
         'FrameRate', 0.0, ...
-        'FrameWidthVisible', scanWidth, ...
+        'FrameWidthVisible', frameWidth, ...
         'InputScaleCh1_V', 1.0, ...
         'InputScaleCh2_V', 5.0, ...
         'InputScaleCh3_V', 1.0, ...
@@ -220,6 +226,7 @@ function makeHDF(handles, scanImage)
         'scanVelocity', 1);
     
     % write the data to a new HDF5 file
+    cd(saveFilePath);
     
     fcpl = H5P.create('H5P_FILE_CREATE');
     fapl = H5P.create('H5P_FILE_ACCESS');
@@ -299,9 +306,11 @@ function makeHDF(handles, scanImage)
     h5write(saveFileName, '/ArbScanPath/pathObjSubNum', handles.pathObjSubNum);
 
     % and finally, the scan image
-    rotatedScanImage = transpose(scanImage);
-    h5create(saveFileName, '/ImageCh1/00000001', size(rotatedScanImage));
-    h5write(saveFileName, '/ImageCh1/00000001', rotatedScanImage);
+    h5create(saveFileName, '/ImageCh1/00000001', size(frame1));
+    h5write(saveFileName, '/ImageCh1/00000001', frame1);
+    h5create(saveFileName, '/ImageCh1/00000002', size(frame2));
+    h5write(saveFileName, '/ImageCh1/00000002', frame2);
+    
     msgbox('Test Scan Complete');
          
     
@@ -562,6 +571,7 @@ function refreshListbox(handles)
 function scanCoords = flattenScanGroups(group)
     % create a list of scanCoords that includes the scanCoords from every
     % group
+    
     nGroups = length(group);
     scanCoords = [];        % the struct array that will hold the full scan path
                     % with all group cycles included
@@ -652,6 +662,7 @@ function handles = updatePath(hObject, eventdata, handles,extra)
     % TODO: Once again, will need to iterate over groups and handle
     % transitions between groups
     
+    
     for i = 1:length(scanCoords)
         sc = scanCoords(i);     % copy to a structure, to make it easier to access
         
@@ -660,14 +671,30 @@ function handles = updatePath(hObject, eventdata, handles,extra)
             [pathLine objSubNum] = makePathLineVelMaxAcc(sc.startPoint,sc.endPoint,handles.scanStepSize,sc.nLines,handles.maxAcc,handles.pixelDwellTime);
 
             % add a spline to connect to previous path, if previous path is non-zero
+            % CHANGE: pathObjNum is now a 2 dimensional array -- the first
+            % column is the original pathObjNum vector, and the second column 
+            % holds the unique ID for each element
             if isempty(handles.path)
                 handles.path = pathLine;                           % this is the first line, just add
-                handles.pathObjNum = ones(size(pathLine,1),1);     % first line
+                handles.pathObjNum = ones(size(pathLine,1),2);     % first line
+                handles.pathObjNum( : , 2 ) = sc.ID;
                 handles.pathObjSubNum = objSubNum;
             else
                 pathSpline = splineFuncMaxAcc(handles.path,pathLine,handles.maxAcc,handles.pixelDwellTime);      % splineFunc determines turn points
                 handles.path = [handles.path; pathSpline; pathLine]; 
-                handles.pathObjNum = [handles.pathObjNum; zeros(size(pathSpline,1),1); i*ones(size(pathLine,1),1)]; 
+                
+                splineStartIndex = size(handles.pathObjNum, 1);
+                pathStartIndex = splineStartIndex + size(pathSpline,1);
+                pathEndIndex = pathStartIndex + size(pathLine,1);
+                
+                handles.pathObjNum( splineStartIndex : pathStartIndex, : ) = 0;
+                handles.pathObjNum( pathStartIndex : pathEndIndex, 1 ) = i;
+                handles.pathObjNum( pathStartIndex : pathEndIndex, 2 ) = sc.ID;
+                
+                % old method of increaseing pathObjNum:
+                %handles.pathObjNum = [handles.pathObjNum; zeros(size(pathSpline,1),2); i*ones(size(pathLine,1),2)];
+                % end old method
+                
                 handles.pathObjSubNum = [handles.pathObjSubNum; zeros(size(pathSpline,1),1); objSubNum]; 
             end
             
@@ -703,12 +730,13 @@ function handles = updatePath(hObject, eventdata, handles,extra)
     closeSpline = splineFuncMaxAcc(handles.path,handles.path,handles.maxAcc,handles.pixelDwellTime);
     
     
-
-    
-    
     handles.path = [handles.path; closeSpline];
-    handles.pathObjNum = [handles.pathObjNum; zeros(size(closeSpline,1),1)];
+    handles.pathObjNum = [handles.pathObjNum; zeros(size(closeSpline,1),2)];
     handles.pathObjSubNum = [handles.pathObjSubNum; zeros(size(closeSpline,1),1)];
+    
+    % TESTING
+    assignin('base', 'pathObjNum', handles.pathObjNum);
+    % END TESTING
     
     % make sure paths were added correctly ...
     if size(handles.path,1) ~= size(handles.pathObjNum,1)
@@ -802,16 +830,22 @@ function handles = StopLine(hObject, eventdata, handles)
     lineName = ['line ' num2str(handles.lineIter)];
     handles.lineIter = handles.lineIter + 1;
     handles.drawingLine = false;
+    groupIndex = handles.currentGroupIndex;
+    % also create a unique line ID in this format:
+    %       <group number>.<random number>
+    % that is, a random number 
+    % on the interval [group number, group number + 1]
     
     sc = struct('scanShape', 'line', ...
                 'startPoint', startPoint, ...
                 'endPoint', endPoint, ...
                 'nLines', handles.nLines, ...
                 'orientation', 1, ...
-                'name', lineName );
+                'name', lineName,...
+                'ID', groupIndex + rand);
     
-    groupIndex = handles.currentGroupIndex;
-            
+    
+         
     if isempty(handles.group(groupIndex).scanCoords) || ...
             strcmp(handles.group(groupIndex).scanCoords(1).scanShape, 'blank')
         
@@ -834,15 +868,17 @@ function handles = addBox(handles)
     
     boxName = ['box ' num2str(handles.boxIter)];
     handles.boxIter = handles.boxIter + 1;
-
+    groupIndex = handles.currentGroupIndex;
+    
     sc = struct('scanShape', 'box', ...
                 'startPoint', startPoint, ...
                 'endPoint', endPoint, ...
                 'nLines', handles.numBoxLines, ...
                 'orientation', 1, ...
-                'name', boxName);
+                'name', boxName,...
+                'ID', groupIndex + rand);
     
-    groupIndex = handles.currentGroupIndex;
+    
     
     if isempty(handles.group(groupIndex).scanCoords) || ...
             strcmp(handles.group(groupIndex).scanCoords(1).scanShape, 'blank')
