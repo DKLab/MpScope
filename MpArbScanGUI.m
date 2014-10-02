@@ -707,7 +707,8 @@ function handles = updatePath(hObject, eventdata, handles,extra)
             if isempty(handles.path)
                 % no need need to connect to previous line
                 handles.path = pathBox;                
-                handles.pathObjNum = i*ones(size(pathBox,1),1);    % first line, object num is 1
+                handles.pathObjNum = i*ones(size(pathBox,1),2);    % first line, object num is 1
+                handles.pathObjNum( : , 2 ) = sc.ID;
                 handles.pathObjSubNum = objSubNum;
             else
                 % add previous connecting spline, and box
@@ -715,7 +716,15 @@ function handles = updatePath(hObject, eventdata, handles,extra)
                 pathSpline = splineFuncMaxAcc(handles.path,pathBox,handles.maxAcc,handles.pixelDwellTime);  % path spline determines nPoints
                 
                 handles.path = [handles.path; pathSpline; pathBox];
-                handles.pathObjNum = [handles.pathObjNum; zeros(size(pathSpline,1),1); i*ones(size(pathBox,1),1) ]; 
+                
+                splineStartIndex = size(handles.pathObjNum, 1);
+                pathStartIndex = splineStartIndex + size(pathSpline,1);
+                pathEndIndex = pathStartIndex + size(pathBox,1);
+                
+                handles.pathObjNum( splineStartIndex : pathStartIndex, : ) = 0;
+                handles.pathObjNum( pathStartIndex : pathEndIndex, 1 ) = i;
+                handles.pathObjNum( pathStartIndex : pathEndIndex, 2 ) = sc.ID;
+                
                 handles.pathObjSubNum = [handles.pathObjSubNum; zeros(size(pathSpline,1),1); objSubNum];
             end
 
@@ -733,10 +742,7 @@ function handles = updatePath(hObject, eventdata, handles,extra)
     handles.path = [handles.path; closeSpline];
     handles.pathObjNum = [handles.pathObjNum; zeros(size(closeSpline,1),2)];
     handles.pathObjSubNum = [handles.pathObjSubNum; zeros(size(closeSpline,1),1)];
-    
-    % TESTING
-    assignin('base', 'pathObjNum', handles.pathObjNum);
-    % END TESTING
+   
     
     % make sure paths were added correctly ...
     if size(handles.path,1) ~= size(handles.pathObjNum,1)
